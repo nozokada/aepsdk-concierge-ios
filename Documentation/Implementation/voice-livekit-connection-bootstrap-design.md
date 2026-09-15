@@ -230,19 +230,45 @@ ChatView/MessageListView render the turn — no new rendering code needed
 
 ## 6. Detailed Design
 
-### 6.1 Dependency addition
+### 6.1 Dependency addition (implemented 2026-09-15 — see PR #159)
 
-- `Package.swift`: add `.package(url: "<LiveKit Swift SDK repo>", ...)` to `dependencies`, and the
-  corresponding `.product(name: "LiveKit", package: "...")` to the `AEPBrandConcierge` target's
-  `dependencies`.
-- `Podfile`: add `pod 'LiveKit'` (or the SDK's actual pod name) to `lib_main`/`lib_dev`, so it
-  flows through to `AEPBrandConcierge`, `UnitTests`, and `ConciergeDemoApp` targets identically
-  (this repo's existing pattern for AEPCore/AEPServices).
-- `AEPBrandConcierge.podspec`: add `s.dependency 'LiveKit', ...` alongside the existing AEPCore/
-  AEPServices/AEPEdgeIdentity lines.
-- Exact SDK version/pod name to be confirmed once evaluated against the AVAudioSession doc's OQ-1
-  (the `AudioManager` configuration hook) — the two design docs share this dependency-version
-  decision; don't pin a version in one without checking the other.
+Resolved, not via the pattern originally sketched above. Concretely:
+
+- **`Package.swift`**: `.package(url: "https://github.com/livekit/client-sdk-swift.git", .upToNextMajor(from: "2.17.0"))`
+  added to `dependencies`, and `.product(name: "LiveKit", package: "client-sdk-swift")` added to
+  the `AEPBrandConcierge` target's `dependencies`. Also required adding `.macOS(.v10_15)` to
+  `platforms:` (LiveKit's own manifest declares that minimum; SPM requires a consistent minimum
+  across the whole graph even though this SDK doesn't ship a macOS product).
+- **LiveKit is NOT added via CocoaPods**, unlike the original plan. CocoaPods trunk stopped
+  publishing `LiveKitClient` at 2.0.18 (last published 2025-02-12); every version after that,
+  including our required 2.17.0, depends on `LiveKitUniFFI`, which was **never published to
+  CocoaPods trunk at all**. This isn't a staleness issue to work around — it's a hard resolution
+  failure, confirmed via `pod install`. `Podfile` and `AEPBrandConcierge.podspec` are left without
+  a LiveKit entry, each with a comment explaining why.
+- Instead, LiveKit is added as a **native Xcode Swift Package dependency** directly on the
+  `AEPBrandConcierge` and `ConciergeDemoApp` targets inside `AEPBrandConcierge.xcodeproj` (added
+  programmatically via the `xcodeproj` Ruby gem — CocoaPods' own dependency — rather than by hand
+  editing `project.pbxproj`, which is fragile to edit as text). This is a supported way to mix SPM
+  packages into a CocoaPods-managed Xcode project, and lets `AEPBrandConcierge`'s own source
+  (compiled within this repo's workspace) target LiveKit 2.17.0 regardless of the CocoaPods gap.
+- **Consequence — CocoaPods distribution of this SDK's voice feature is currently broken for
+  external consumers.** Since `AEPBrandConcierge`'s compiled source needs LiveKit 2.17.0 symbols,
+  and CocoaPods can only ever supply 2.0.18 (see above), an external app that installs
+  `AEPBrandConcierge` via CocoaPods (rather than SPM) cannot get a working voice feature at all.
+  This was a deliberate, confirmed trade-off (not an oversight) — accepted for this PoC per the
+  same "ship the fastest thing, don't solve distribution-channel parity yet" reasoning as OQ-1
+  below and the ADR-011 strategy pivot. Revisit before any release beyond this demo.
+- **Also required removing `APPLICATION_EXTENSION_API_ONLY` from the `AEPBrandConcierge` target.**
+  CocoaPods propagates that setting to dependency pod targets reachable from an extension-safe
+  target; LiveKit's camera-capture code (`LKRTCCameraVideoCapturer`) is annotated
+  `unavailable` in app extensions and fails to compile under it. We don't use LiveKit's
+  camera/video features at all (audio-only), but the code is still part of the compiled module.
+  Removing the flag means this SDK can no longer declare itself safe for use inside an app
+  extension (widget, share extension, etc.) — confirmed as an acceptable trade-off, not
+  independently re-litigated here.
+- Version chosen: **2.17.0**, not the CocoaPods-resolvable 2.0.18, after comparing the two —
+  audio-session-relevant fixes landed between them that matter for this feature specifically
+  (see `voice-livekit-audio-session-design.md` OQ-1 for details and links).
 
 ### 6.2 Wire model additions
 
@@ -395,7 +421,7 @@ New file `AEPBrandConcierge/Sources/Controllers/VoiceSessionController.swift`, s
 
 | # | Task | Notes |
 |---|---|---|
-| 2.1 | Add LiveKit Swift SDK dependency (Package.swift/Podfile/podspec) | Coordinate version choice with the AVAudioSession doc's OQ-1 |
+| 2.1 | ✅ Done (PR #159) — Add LiveKit 2.17.0 as a native Xcode SPM package dependency on `AEPBrandConcierge`/`ConciergeDemoApp`; removed `APPLICATION_EXTENSION_API_ONLY` | See §6.1 for the full rationale (CocoaPods can't resolve 2.17.0 at all) |
 | 2.2 | `VoiceSessionController`: connect, mic publish (using the companion doc's audio-session policy), remote audio subscribe | |
 
 ### Phase 3 — Data channel + UI wiring
@@ -421,6 +447,7 @@ New file `AEPBrandConcierge/Sources/Controllers/VoiceSessionController.swift`, s
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Adding LiveKit to the core `AEPBrandConcierge` target increases binary size for all consumers, including ones that never use voice | High (certain) | Medium | Accepted trade-off for the PoC timeline (Option B); tracked as OQ-1 for resolution before a real release |
+| **(Materialized 2026-09-15)** CocoaPods cannot resolve LiveKit 2.17.0 at all (trunk stops at 2.0.18; 2.0.18+'s `LiveKitUniFFI` dependency was never published to trunk) — this is worse than the binary-size risk above: it's not a size trade-off but a hard resolution failure. LiveKit is added via a native Xcode SPM package dependency instead (§6.1), which fixes this repo's own build but means CocoaPods-based external consumers of `AEPBrandConcierge` cannot get a working voice feature at all right now | Certain | High for CocoaPods-based external adopters (none exist yet for this unreleased feature) | Confirmed acceptable for this PoC (ADR-011); must be resolved (e.g. wait for LiveKit to resume CocoaPods publishing, or drop CocoaPods distribution for this SDK, or vendor a private podspec) before any release beyond the Kings demo — folded into OQ-1 |
 | Data-channel field/type names drift from `LiveKitContracts.ts` over time (two independently maintained clients) | Medium | High (breaks interop with the shared backend worker) | Field/type names copied verbatim in this design (§6.2); flag any web-side contract change to the iOS team and vice versa |
 | `ConversationResponse`'s new `voice` field interacts badly with an existing decode edge case (e.g. a custom decoder elsewhere assuming a fixed key set) | Low | Medium | NFR-02 test case (§6.6) exercises decode with and without the key |
 | Bootstrap and Room-connection error paths diverge in quality/coverage from each other (bootstrap well-handled, Room-connect failures not) | Medium | Medium | FR-07 sets bootstrap error handling to existing-text-turn quality; Room-connect failure handling should get the same bar in Phase 2, not skipped |
@@ -431,7 +458,7 @@ New file `AEPBrandConcierge/Sources/Controllers/VoiceSessionController.swift`, s
 
 | # | Question | Owner |
 |---|---|---|
-| OQ-1 | Should LiveKit remain a direct dependency of `AEPBrandConcierge` past this PoC, or move to an optional SPM product/CocoaPods subspec (Rejected Alternative C) before any broader release? | Anshika/Jose, iOS team |
+| OQ-1 | Should LiveKit remain a direct dependency of `AEPBrandConcierge` past this PoC, or move to an optional SPM product/CocoaPods subspec (Rejected Alternative C) before any broader release? **Updated (2026-09-15):** this is no longer just a binary-size question — CocoaPods cannot resolve LiveKit 2.17.0 at all (see §6.1, Risks), so CocoaPods-based external adopters currently get no working voice feature regardless of the optional-module question. Needs a real decision (resume-CocoaPods-publishing dependency on LiveKit upstream, drop CocoaPods distribution for this SDK, or vendor a podspec) before any release beyond this PoC. | Anshika/Jose, iOS team |
 | OQ-2 | Should `VoiceSessionController` be split into a transport layer and a turn-state-machine layer (mirroring web's `VoiceTransport`/`LiveKitVoiceManager` split) once real device testing is underway, or does the combined PoC version stay maintainable? | iOS team, revisit after Phase 2/3 |
 | OQ-3 | Does the `USE_TEMPS` debug shortcut in `ConciergeChatService` need an equivalent for voice bootstrap testing, or should voice testing always require real Kings stage config (as already established for text)? | iOS team |
 | OQ-4 | ~~Does the demo require sources/multimodal-element/feedback-eligibility parity for voice turns, or is a plain streaming text bubble sufficient for the initial demo to Mehul?~~ **Resolved (2026-09-14, see ADR-011):** no — v1 ships a plain post-call transcript with no live rendering or rich content at all (FR-05); parity is added later only if Mehul asks for it after seeing the first demo. | — resolved |

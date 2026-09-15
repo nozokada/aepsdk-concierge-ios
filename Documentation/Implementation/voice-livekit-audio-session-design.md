@@ -95,14 +95,17 @@ Fighting the SDK for ownership was rejected as high-risk for a PoC.
 **Option C — Adopt LiveKit's audio session manager as the sole owner of session activation, and
 configure it through the hooks the SDK exposes (selected).** LiveKit's `AudioManager` (the
 client-side wrapper around WebRTC's audio session handling) is designed to be configured, not
-bypassed: it exposes a configuration hook (in recent SDK versions,
-`AudioManager.shared.customConfigureAudioSessionFunc`, plus track/session state callbacks) that
-lets the host set category/mode/options once, while the SDK still drives *when* the session
-activates/deactivates in response to `Room`/track state. This gives us the full-duplex,
-echo-cancelled configuration we need (§4, FR-02) without contesting ownership of `setActive`
-timing with WebRTC's own engine. **The exact hook name/shape must be verified against the pinned
-LiveKit Swift SDK version once it's added as a dependency (see Open Question OQ-1) — treat the
-API name in this document as the expected shape based on the current public SDK, not a promise.**
+bypassed. This gives us the full-duplex, echo-cancelled configuration we need (§4, FR-02) without
+contesting ownership of `setActive` timing with WebRTC's own engine. **Verified against LiveKit
+2.17.0 (the version actually pinned — see `voice-livekit-connection-bootstrap-design.md` §6.1) on
+2026-09-15, resolving Open Question OQ-1:** the mechanism this design originally assumed,
+`AudioManager.shared.customConfigureAudioSessionFunc`, exists but is **deprecated** in 2.17.0 in
+favor of `AudioManager.shared.set(engineObservers:)` (an `AudioSessionEngineObserver`-based
+mechanism) for dynamic/reactive configuration. For our use case — a fixed policy applied once,
+not reactive reconfiguration — the simpler, non-deprecated fit is the declarative
+`AudioManager.shared.sessionConfiguration: AudioSessionConfiguration?` property (see §6.1 for the
+concrete value). Both `sessionConfiguration` and `customConfigureAudioSessionFunc` are ignored if
+the other is set — pick one, not both.
 
 ---
 
@@ -111,11 +114,12 @@ API name in this document as the expected shape based on the current public SDK,
 - Treat `AVAudioSession` category/mode/options as **policy we hand to LiveKit's `AudioManager`**,
   not state we imperatively set ourselves — LiveKit remains the sole caller of
   `setActive`/`setCategory` while a voice `Room` exists.
-- Default configuration: `.playAndRecord` category, `.voiceChat` mode (WebRTC's own recommended
-  mode for full-duplex VoIP-style audio — enables built-in echo cancellation, matching web's
-  `echoCancellation: true`), `[.allowBluetooth, .defaultToSpeaker]` options, mirroring
-  `SpeechCapturer`'s option choices where they still make sense but changing the mode for the
-  full-duplex/echo-cancellation reason above.
+- Default configuration: LiveKit's own `.playAndRecordSpeaker` preset — `.playAndRecord` category,
+  `.videoChat` mode (not `.voiceChat`; see §6.1 for why LiveKit's own maintainers use `.videoChat`
+  for the speaker-routed case), `[.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay,
+  .defaultToSpeaker]` options — all still full-duplex/echo-cancelled per WebRTC's voice-processing
+  I/O, matching web's `echoCancellation: true` (§6.1, revised 2026-09-15 after checking the actual
+  pinned SDK version).
 - The new voice controller (sibling to `SpeechController`, not built on it) owns telling LiveKit
   when to activate/deactivate the session — i.e., it starts/stops in step with `Room` connect/
   disconnect, the same lifecycle boundary `VoiceTransport.connectRoom()`/`disconnectRoom()` use
@@ -138,8 +142,8 @@ API name in this document as the expected shape based on the current public SDK,
 | ID | Requirement |
 |---|---|
 | FR-01 | The voice session shall configure the shared `AVAudioSession` for full-duplex audio (`.playAndRecord`) with the device's built-in echo cancellation enabled, so that local mic capture is not corrupted by concurrent remote (TTS) playback. |
-| FR-02 | The voice session shall enable acoustic echo cancellation, noise suppression, and automatic gain control equivalent in effect to web's `AUDIO_CAPTURE_DEFAULTS` (`echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: true`), via `.voiceChat` mode and/or LiveKit's audio processing configuration. |
-| FR-03 | The voice session shall route audio to the speaker by default (`.defaultToSpeaker`) and support Bluetooth HFP headsets (mic + audio) via `.allowBluetooth`, matching current in-app expectations from `SpeechCapturer`. |
+| FR-02 | The voice session shall enable acoustic echo cancellation, noise suppression, and automatic gain control equivalent in effect to web's `AUDIO_CAPTURE_DEFAULTS` (`echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: true`), via a full-duplex-capable session mode (`.videoChat`, per §6.1 — WebRTC's voice-processing I/O provides AEC/NS/AGC regardless of the `.videoChat`/`.voiceChat` mode choice) and/or LiveKit's audio processing configuration. |
+| FR-03 | The voice session shall route audio to the speaker by default (`.defaultToSpeaker`) and support Bluetooth HFP/A2DP headsets and AirPlay via LiveKit's own `.playAndRecordSpeaker` option set (`[.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay, .defaultToSpeaker]`, §6.1 — updated 2026-09-15, resolving OQ-3), matching current in-app expectations from `SpeechCapturer` for the speaker/HFP case and extending beyond it per LiveKit's own tuning. |
 | FR-04 | On an `AVAudioSession.interruptionNotification` with reason `.began` (e.g. incoming call, Siri), the voice session shall mute the local mic track and pause remote audio playback without tearing down the LiveKit `Room` connection. |
 | FR-05 | On the corresponding interruption `.ended` with `.shouldResume` set, the voice session shall restore mic/playback to their pre-interruption state; without `.shouldResume`, it shall leave the session paused and require explicit user action to resume. |
 | FR-06 | On a hardware route change (`.newDeviceAvailable`/`.oldDeviceUnavailable`, e.g. AirPods connect/disconnect, wired headset plug/unplug), the voice session shall allow LiveKit's WebRTC audio unit to renegotiate format/routing without the app rebuilding its own capture pipeline (contrast with `SpeechCapturer`'s manual `AVAudioEngine` rebuild, which does not apply here — see §6.2). |
@@ -152,7 +156,7 @@ API name in this document as the expected shape based on the current public SDK,
 |---|---|
 | NFR-01 | Audio session configuration must not directly call `AVAudioSession.sharedInstance().setActive(...)` from Brand Concierge code while a LiveKit `Room` with an audio track is connected — LiveKit's `AudioManager` must be the sole caller during that window, to avoid session-ownership contention (see Rejected Alternative B). |
 | NFR-02 | The chosen category/mode/options must be verified on at least: built-in mic + speaker, wired headset, and one Bluetooth HFP device, before this design is considered validated (see §8 Verification Criteria). |
-| NFR-03 | Any LiveKit SDK version pinned for this feature must be checked against the audio-session configuration hook this design assumes (see Open Question OQ-1) before implementation proceeds past the AVAudioSession module. |
+| NFR-03 | ✅ Done (2026-09-15): the pinned LiveKit SDK version (2.17.0) was checked against the audio-session configuration mechanism this design assumes (Open Question OQ-1) — resolved to the `sessionConfiguration`/`AudioSessionConfiguration` API, not the originally-assumed (and now-deprecated) `customConfigureAudioSessionFunc`. See §2 Option C and §6.1. |
 
 ### Out of Scope
 
@@ -211,7 +215,7 @@ New voice controller: configure LiveKit AudioManager policy (category/mode/optio
 LiveKit Room.connect() + local track publish
    │
    ▼
-LiveKit AudioManager activates AVAudioSession (.playAndRecord/.voiceChat) ── mirrors web's
+LiveKit AudioManager activates AVAudioSession (.playAndRecord/.videoChat, see §6.1) ── mirrors web's
    `room.connect()` + `publishTrack()` in VoiceTransport.connectRoom()
    │
    ├─▶ AVAudioSession.interruptionNotification (.began) → mute local track, pause remote audio
@@ -234,21 +238,40 @@ LiveKit AudioManager deactivates AVAudioSession as part of Room teardown ── 
 
 ### 6.1 Category, mode, and options
 
-- **Category:** `.playAndRecord` — unchanged from `SpeechCapturer`; required for simultaneous
-  input+output.
-- **Mode:** `.voiceChat`, not `.measurement`. `.voiceChat` is WebRTC/VoIP-oriented and keeps the
-  session's built-in acoustic echo cancellation active — this is the load-bearing difference from
-  `SpeechCapturer` (FR-01, FR-02). `.measurement` (used by `SpeechCapturer`) is explicitly wrong
-  here because it disables that processing.
-- **Options:** `[.allowBluetooth, .defaultToSpeaker]`, matching `SpeechCapturer`'s current choices.
-  `.allowBluetoothA2DP` is deliberately not added at this stage — A2DP is high-quality
-  output-only and doesn't provide a return mic path suitable for a HFP-style two-way call;
-  confirm with team whether any target Bluetooth device needs it (fold into OQ-3 if raised in
-  review).
-- **Where this is set:** through LiveKit's `AudioManager` configuration hook (Rejected
-  Alternative C), once, before the first `Room.connect()` of a voice session — not via a direct
-  `AVAudioSession.setCategory` call from Brand Concierge code path while a `Room` is live
-  (NFR-01).
+**Revised 2026-09-15** after checking LiveKit 2.17.0's actual `AudioSessionConfiguration` presets
+(`Sources/LiveKit/Types/AudioSessionConfiguration.swift`) — LiveKit ships its own tuned presets for
+exactly this kind of full-duplex voice use case, and their own code comments document a real,
+observed WebRTC bug our original assumption would have walked into. Use their preset rather than
+hand-rolling the tuple:
+
+- **Category:** `.playAndRecord` — unchanged from the original plan and from `SpeechCapturer`;
+  required for simultaneous input+output. Matches LiveKit's own `playAndRecordSpeaker`/
+  `playAndRecordReceiver` presets.
+- **Mode:** `.videoChat`, **not** `.voiceChat` as originally planned. LiveKit's own
+  `playAndRecordSpeaker` preset (the one with `.defaultToSpeaker`, which is what we want per FR-03)
+  uses `.videoChat` mode, not `.voiceChat` — their code comment explains why: "iOS may rewrite the
+  mode when Voice Processing I/O is instantiated (observed switching to voiceChat, adding this
+  option itself), and `.default` mode routes to the receiver without it." In other words, `.voiceChat`
+  mode combined with speaker routing has an observed iOS quirk that LiveKit's own maintainers
+  already hit and worked around; `.measurement` (used by `SpeechCapturer`) remains wrong here for
+  the same AGC/echo-cancellation reason as before (FR-01, FR-02).
+- **Options:** `[.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay, .defaultToSpeaker]`, matching
+  LiveKit's own `playAndRecordSpeaker` preset (`playAndRecordOptions.union(.defaultToSpeaker)`).
+  This **reverses** the original plan's decision to omit `.allowBluetoothA2DP` (OQ-3) — LiveKit's
+  own maintainers include it in their recommended preset, which is a stronger signal than our
+  original guess that HFP-only is sufficient; there's no longer a reason to diverge from their
+  tuning. `.allowAirPlay` is newly added for the same reason (not previously considered).
+  **`.mixWithOthers` must NOT be added** — LiveKit's own comment documents a real WebRTC engine-init
+  race (`-66637`/`kAudioUnitErr_Initialized`) triggered by that option on the record path; it's
+  deliberately absent from their `playAndRecord*` presets (kept only on their listen-only
+  `playback` preset, where it's safe).
+- **Where this is set:** `AudioManager.shared.sessionConfiguration = AudioSessionConfiguration(category: .playAndRecord, categoryOptions: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay, .defaultToSpeaker], mode: .videoChat)`
+  (or simply `AudioManager.shared.sessionConfiguration = .playAndRecordSpeaker`, LiveKit's own
+  built-in preset, which is exactly this — use the preset unless a reason emerges to diverge from
+  it), set once before the first `Room.connect()` of a voice session. Use the declarative
+  `sessionConfiguration` property, **not** the deprecated `customConfigureAudioSessionFunc` (see
+  §2 Option C) — not via a direct `AVAudioSession.setCategory` call from Brand Concierge code while
+  a `Room` is live (NFR-01).
 
 ### 6.2 Route changes
 
@@ -301,7 +324,7 @@ disruptive to silently drop, so this needs explicit handling:
 ### 6.5 Test plan
 
 - Unit-level (where mockable): configuration-policy object (category/mode/options tuple) is
-  correct for `.playAndRecord`/`.voiceChat`/`[.allowBluetooth, .defaultToSpeaker]`, and is applied
+  correct for `.playAndRecord`/`.videoChat`/`[.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay, .defaultToSpeaker]` (LiveKit's `.playAndRecordSpeaker` preset), and is applied
   exactly once per voice-session start (not re-applied redundantly on every track event).
 - Manual/integration, on real devices (AVAudioSession behavior is not meaningfully testable in
   the simulator for mic/route/interruption scenarios):
@@ -333,7 +356,7 @@ disruptive to silently drop, so this needs explicit handling:
 
 | Scenario | Expected Result |
 |---|---|
-| Start voice session on built-in mic + speaker | Session activates as `.playAndRecord`/`.voiceChat`; no audible echo of remote TTS into what the worker receives as user speech |
+| Start voice session on built-in mic + speaker | Session activates as `.playAndRecord`/`.videoChat` (LiveKit's `.playAndRecordSpeaker` preset); no audible echo of remote TTS into what the worker receives as user speech |
 | Start voice session, then connect Bluetooth HFP headset | Mic and playback both switch to the Bluetooth device without app crash or silent mic |
 | Start voice session, then connect/disconnect AirPods | LiveKit's WebRTC audio unit recovers without an app-level pipeline rebuild; no dropped audio beyond the expected brief route-switch gap |
 | Incoming phone call during voice session | Local mic mutes, remote (TTS) playback pauses; `Room` connection is not torn down |
@@ -351,8 +374,8 @@ disruptive to silently drop, so this needs explicit handling:
 
 | # | Task | Notes |
 |---|---|---|
-| 1.1 | Add LiveKit Swift SDK as a dependency (version TBD) | Prerequisite for everything else; not yet in `Package.swift`/`Podfile` |
-| 1.2 | Verify `AudioManager`'s actual configuration hook/API against the pinned version | Resolves OQ-1; may change §6.1's exact call site, not the policy values themselves |
+| 1.1 | ✅ Done (PR #159) — Added LiveKit 2.17.0 as a native Xcode SPM dependency (not CocoaPods — see `voice-livekit-connection-bootstrap-design.md` §6.1) | |
+| 1.2 | ✅ Done (2026-09-15) — Verified `AudioManager`'s actual configuration API against 2.17.0: resolved to `sessionConfiguration`/`AudioSessionConfiguration` (§6.1), and discovered the correct mode is `.videoChat` (matching LiveKit's own `.playAndRecordSpeaker` preset), not the originally-planned `.voiceChat` | Resolves OQ-1 |
 
 ### Phase 2 — Audio session policy module
 
@@ -380,8 +403,8 @@ disruptive to silently drop, so this needs explicit handling:
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Brand Concierge code and LiveKit's `AudioManager` both call `AVAudioSession` activation APIs, causing category/activation contention (silent mic, crash on deactivate) | Medium | High | NFR-01: no direct `setActive`/`setCategory` calls from Brand Concierge while a voice `Room` is connected; all policy goes through LiveKit's configuration hook (Phase 1.2 verifies the exact API) |
-| Assumed `AudioManager` configuration hook doesn't exist or behaves differently in the SDK version actually pinned | Medium | High | Phase 1.2 is a blocking task before Phase 2 proceeds; this doc's API references are explicitly flagged as needing verification (see Rejected Alternative C) |
-| `.voiceChat` mode's built-in AEC/NS/AGC doesn't fully suppress echo on some devices (e.g. loud speaker + sensitive mic) | Low–Medium | Medium | Covered by the real-device echo test in §8; if insufficient, escalate to LiveKit's own audio-processing options (e.g. explicit AEC configuration) as a follow-up, not by disabling `.voiceChat` |
+| ~~Assumed `AudioManager` configuration hook doesn't exist or behaves differently in the SDK version actually pinned~~ | ~~Medium~~ | ~~High~~ | **Resolved 2026-09-15** (Phase 1.2): it existed but was deprecated; corrected to `sessionConfiguration` and the `.videoChat` mode finding (§6.1) |
+| `.videoChat` mode's built-in AEC/NS/AGC doesn't fully suppress echo on some devices (e.g. loud speaker + sensitive mic) | Low–Medium | Medium | Covered by the real-device echo test in §8; if insufficient, escalate to LiveKit's own audio-processing options (e.g. explicit AEC configuration) as a follow-up, not by reverting to `.voiceChat` (§6.1 explains why `.videoChat` was chosen instead) |
 | Route-change behavior differs across iOS versions/devices in ways `SpeechCapturer`'s precedent didn't need to handle (since it rebuilt its own engine) | Low | Medium | §8's AirPods/wired-headset test scenarios are part of sign-off; if LiveKit doesn't recover cleanly on a given reason code, revisit §6.2 then (avoid pre-building a rebuild path speculatively, per PoC scope) |
 | Sequential handoff between LiveKit voice and `SpeechCapturer` voice leaves stale session state (FR-08/§6.4) | Low | Medium | Explicit test case in §8; if a problem surfaces, the fix is scoped to session-deactivation ordering, not a redesign |
 
@@ -391,8 +414,8 @@ disruptive to silently drop, so this needs explicit handling:
 
 | # | Question | Owner |
 |---|---|---|
-| OQ-1 | What is the exact `AudioManager` configuration API in the LiveKit Swift SDK version we pin, and does it match the `customConfigureAudioSessionFunc`-style hook assumed in §2/§6.1? | iOS team, once dependency is added |
+| OQ-1 | ~~What is the exact `AudioManager` configuration API in the LiveKit Swift SDK version we pin, and does it match the `customConfigureAudioSessionFunc`-style hook assumed in §2/§6.1?~~ **Resolved (2026-09-15):** it's `sessionConfiguration`/`AudioSessionConfiguration` (the closure hook exists but is deprecated); mode corrected to `.videoChat`. See §2 Option C and §6.1. | — resolved |
 | OQ-2 | Is background audio (voice session continuing while the app is backgrounded) a requirement for this PoC, or a later phase? | Product/PoC owner |
-| OQ-3 | Do we need `.allowBluetoothA2DP` for any target Bluetooth accessory, or is HFP-only (`.allowBluetooth`) sufficient? | iOS team + QA, pending device matrix |
+| OQ-3 | ~~Do we need `.allowBluetoothA2DP` for any target Bluetooth accessory, or is HFP-only (`.allowBluetooth`) sufficient?~~ **Resolved (2026-09-15):** yes — LiveKit's own `.playAndRecordSpeaker` preset includes `.allowBluetoothA2DP` (and `.allowAirPlay`); adopted rather than diverging from their tuning (§6.1). Device-matrix testing (§8) still applies to confirm behavior on real hardware. | — resolved |
 | OQ-4 | ~~If a `SpeechCapturer` interaction and a LiveKit voice session are both reachable in the same app build, what's the desired UX when one is requested while the other is active?~~ **Resolved:** dictation is not replaced; it stays available whenever voice mode is off and is gated off while voice mode is on (mirrors web). See FR-08. | — resolved |
 | OQ-5 | Does product want CallKit-style system integration (voice session appears as a call) for a future phase? | Product |
