@@ -103,6 +103,7 @@
 		2907A6419462F5F908EAF7F9 /* MessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5EE8AC6DB678C5F5BEA41F8 /* MessageTests.swift */; };
 		3523A0148F1C41662548C065 /* BuyNowMockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4274A7A6D620553F44A2B4CD /* BuyNowMockView.swift */; };
 		3743A0FEC974D8BF598ACBBE /* BasicMessageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE4EA5F0D817FDEC1A8F6695 /* BasicMessageView.swift */; };
+		3BB09B2A06F00CDD57CF79B9 /* VoicePayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FC0BD6EBF9DD6BEC2E0C1E8 /* VoicePayload.swift */; };
 		3BC69E9C64052B6BBCA4AE99 /* ProductDetailCardViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E21378B0B68D3623005C3C79 /* ProductDetailCardViewTests.swift */; };
 		4168C09F9AE8ECF09BC984C2 /* VoiceSessionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18837329E314605F7FC31F1D /* VoiceSessionControllerTests.swift */; };
 		44D3D2BA6FCA570474FBD2B5 /* GeoURLConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9E7DD31CC1B008B43BF0F97 /* GeoURLConverter.swift */; };
@@ -255,6 +256,7 @@
 		0D4C57535CE2A722B6A0CC54 /* AudioWaveformView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AudioWaveformView.swift; sourceTree = "<group>"; };
 		0F1601712FADD63D0032EFD0 /* LinkHint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkHint.swift; sourceTree = "<group>"; };
 		0F1601742FAF7FA80032EFD0 /* MessageFeedbackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageFeedbackView.swift; sourceTree = "<group>"; };
+		0FC0BD6EBF9DD6BEC2E0C1E8 /* VoicePayload.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoicePayload.swift; sourceTree = "<group>"; };
 		18212DD855ADEEFDFE97322B /* Pods-UnitTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-UnitTests.debug.xcconfig"; path = "Target Support Files/Pods-UnitTests/Pods-UnitTests.debug.xcconfig"; sourceTree = "<group>"; };
 		18837329E314605F7FC31F1D /* VoiceSessionControllerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceSessionControllerTests.swift; sourceTree = "<group>"; };
 		202C8B02213B468D0644D4CA /* Pods-ConciergeDemoApp.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ConciergeDemoApp.release.xcconfig"; path = "Target Support Files/Pods-ConciergeDemoApp/Pods-ConciergeDemoApp.release.xcconfig"; sourceTree = "<group>"; };
@@ -542,6 +544,7 @@
 				24037AD32EF364B000FF4031 /* ConversationPayload.swift */,
 				24037AD42EF364B000FF4031 /* ConversationResponse.swift */,
 				24037AD52EF364B000FF4031 /* Source.swift */,
+				0FC0BD6EBF9DD6BEC2E0C1E8 /* VoicePayload.swift */,
 			);
 			path = Network;
 			sourceTree = "<group>";
@@ -1325,6 +1328,7 @@
 				B6B082EF543410FE5586506E /* AudioWaveformView.swift in Sources */,
 				44D3D2BA6FCA570474FBD2B5 /* GeoURLConverter.swift in Sources */,
 				DC358DCCC98AF3D67B390D3B /* VoiceSessionController.swift in Sources */,
+				3BB09B2A06F00CDD57CF79B9 /* VoicePayload.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
