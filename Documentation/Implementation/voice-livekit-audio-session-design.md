@@ -419,3 +419,15 @@ disruptive to silently drop, so this needs explicit handling:
 | OQ-3 | ~~Do we need `.allowBluetoothA2DP` for any target Bluetooth accessory, or is HFP-only (`.allowBluetooth`) sufficient?~~ **Resolved (2026-09-15):** yes — LiveKit's own `.playAndRecordSpeaker` preset includes `.allowBluetoothA2DP` (and `.allowAirPlay`); adopted rather than diverging from their tuning (§6.1). Device-matrix testing (§8) still applies to confirm behavior on real hardware. | — resolved |
 | OQ-4 | ~~If a `SpeechCapturer` interaction and a LiveKit voice session are both reachable in the same app build, what's the desired UX when one is requested while the other is active?~~ **Resolved:** dictation is not replaced; it stays available whenever voice mode is off and is gated off while voice mode is on (mirrors web). See FR-08. | — resolved |
 | OQ-5 | Does product want CallKit-style system integration (voice session appears as a call) for a future phase? | Product |
+
+---
+
+## 12. Implementation Outcome (as-built, 2026-09-16)
+
+The audio policy from §6.1 was implemented as designed and verified on a real device against Kings stage: `AudioManager.shared.sessionConfiguration = AudioSessionConfiguration(category: .playAndRecord, categoryOptions: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay, .defaultToSpeaker], mode: .videoChat)` (LiveKit's `.playAndRecordSpeaker` preset values, rebuilt explicitly because that preset is `internal`). Interruption handling (§6.3) is in `VoiceSessionController`.
+
+**Echo cancellation confirmed sufficient (FR-01/FR-02).** On device, with the mic live during the assistant's response, the worker's TTS is **not** transcribed back as user input — WebRTC/Apple voice-processing AEC (on by default; `isPlatformVoiceProcessingAllowed` = true, `.videoChat` mode) handles it. No explicit `AudioProcessingOptions` tuning was needed.
+
+**Per-turn mic muting is minimal, and is NOT the echo defense.** An early attempt muted the mic for the entire assistant turn to stop TTS-into-input; that suppressed barge-in and diverged from web. Corrected to match web's turn model: mute only during the brief *processing* gap (user-final → assistant starts responding) and keep the mic **live during the response** so the user can barge in — echo is handled by AEC, not by muting. This lives in `VoiceSessionController`'s data-channel handler (see `voice-livekit-connection-bootstrap-design.md` §12.4), not in `SpeechController`.
+
+**Real-device matrix (§8) status:** built-in mic + speaker verified (no echo, barge-in works, mic/session teardown clean). Bluetooth HFP, AirPods connect/disconnect, incoming-call interruption resume, and wired-headset unplug remain to be run.

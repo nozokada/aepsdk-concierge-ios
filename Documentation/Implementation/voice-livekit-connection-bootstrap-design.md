@@ -463,3 +463,30 @@ New file `AEPBrandConcierge/Sources/Controllers/VoiceSessionController.swift`, s
 | OQ-3 | Does the `USE_TEMPS` debug shortcut in `ConciergeChatService` need an equivalent for voice bootstrap testing, or should voice testing always require real Kings stage config (as already established for text)? | iOS team |
 | OQ-4 | ~~Does the demo require sources/multimodal-element/feedback-eligibility parity for voice turns, or is a plain streaming text bubble sufficient for the initial demo to Mehul?~~ **Resolved (2026-09-14, see ADR-011):** no — v1 ships a plain post-call transcript with no live rendering or rich content at all (FR-05); parity is added later only if Mehul asks for it after seeing the first demo. | — resolved |
 | OQ-5 | If/when a later iteration adds live rendering (per Mehul's feedback), does it reuse `streamAgentResponse`'s incremental accumulation pattern as originally planned, or does the buffered v1 design make a different approach easier? | iOS team, revisit if/when triggered |
+
+---
+
+## 12. Implementation Outcome (as-built, 2026-09-16)
+
+Phases 1–3 are implemented and a **full voice loop runs on a real device** against Kings stage (bootstrap → Room connect → speak → live transcript → TTS → barge-in → end). Draft PRs #160 (Phase 1), #161 (Phase 2, stacked on #159), #162 (Phase 3 — integration branch merging #160 into the #161 stack). Device bring-up surfaced several corrections to this design that were **not knowable from the design phase**; they are recorded here rather than silently rewriting the sections above, and cross-checked against the working stage voice client `bc-voice-test/sdk-load`.
+
+### 12.1 Bootstrap endpoint (corrects §3, §5, §6.3)
+
+The voice bootstrap does **not** reuse the text-turn endpoint. It POSTs to **`/brand-concierge-voice/conversations`**, not `/brand-concierge/conversations`. `ConciergeChatService.createUrl(path:)` was parameterized so the bootstrap uses the voice path while `streamChat`/`sendFeedback` keep the text path. Sending the bootstrap to the text endpoint returns a stream that closes with no `livekit_session` payload (the first on-device failure mode observed).
+
+### 12.2 Bootstrap payload shape (corrects §6.3)
+
+The `livekit-bootstrap` discriminator rides in **`conversation.data.type`**, i.e. `conversation.data = { "type": "livekit-bootstrap" }` — the same `data` slot the text turn uses for its `{ type: "auth" }` part — **not** a top-level `conversation.type`, and **no `publishMic`** field. Voice bootstrap authenticates via the Edge identity/ECID, so the app auth token is **not** attached to the bootstrap payload. (The design's originally-sketched `{ type, publishMic }` at the conversation top level was wrong.)
+
+### 12.3 FR-05 revised again: live rendering was implemented (resolves OQ-5)
+
+After the buffered v1 loop worked on device, live per-turn rendering was added on request. It was cheap because the buffered v1 had already solved parsing, turn detection, and threading — so OQ-5 resolves in favor of "the buffered design made the live version easy." `VoiceSessionController` emits `onTranscriptUpdate(role, runningText, isFinal)`; `ChatController.applyVoiceTranscriptUpdate` updates the in-progress user/assistant bubble in place. Key parsing nuance confirmed on the wire: **user STT arrives as cumulative snapshots** (replace the bubble text), while **assistant `text_delta` is incremental** (append), finalized by `turn_done.fullText`. Rich `ui_payload` (cards/CTAs) is still deferred.
+
+### 12.4 Mic control / barge-in (interacts with the AVAudioSession doc §6.3)
+
+Half-duplex mic management matches web: mute the mic only during the brief *processing* gap (user-final → assistant starts responding) and keep it **live during the assistant's response**, relying on acoustic echo cancellation to keep the TTS out of the captured signal — which is what makes **barge-in** work. An initial implementation that muted for the whole assistant turn suppressed barge-in and was corrected. On-device (2026-09-16): echo (TTS-into-input) does not recur and barge-in works. Barge-in *polish* (pausing/ducking the remote TTS on interrupt, as web's `pauseRemoteAudio()` does) is still deferred.
+
+### 12.5 Config & network prerequisites (device)
+
+- **Datastream + IMS org must both be correct.** The app must be provisioned with the Kings voice datastream *and* the matching IMS org (the ECID must be minted under the datastream's org). A stale/incorrect datastream returns `Invalid datastream ID` from Edge. (Resolves OQ-3 in practice: real Kings stage config is required; there is no `USE_TEMPS` shortcut for voice.)
+- **The LiveKit host is internal (corp).** Bootstrap returns a `.corp.ethos…` LiveKit host (e.g. `bc-livekit-stage.corp.ethos270-stage-va7.ethos.adobe.net`). The public Edge bootstrap succeeds off-corp, but the WebRTC `Room` connection (`wss://…/rtc`) **requires the device to be on the corp network / VPN**, or it times out. This was the second on-device blocker.
